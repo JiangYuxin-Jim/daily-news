@@ -11,63 +11,88 @@ from pathlib import Path
 
 REPO_DIR = Path("/home/admin/code/daily-news")
 TOKEN = os.environ.get("GITHUB_TOKEN", "")
-
 CST = timezone(timedelta(hours=8))
 
-def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
-def fetch_bilibili_trending():
-    """获取B站科技区热门"""
-    ret = []
-    r = run(["curl", "-s", 
-             "https://api.bilibili.com/x/web-interface/ranking/v2?rid=188&type=all",
-             "-H", "User-Agent: Mozilla/5.0"])
+def run(cmd, timeout=15, **kw):
     try:
-        data = json.loads(r.stdout)
-        for v in data.get("data", {}).get("list", [])[:8]:
-            ret.append(f"- [{v['title']}](https://www.bilibili.com/video/{v['bvid']})")
-    except:
-        pass
-    return ret
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+    except subprocess.TimeoutExpired:
+        return None
 
-def fetch_hackernews():
-    """获取Hacker News热门"""
-    ret = []
-    r = run(["curl", "-s", 
+def fetch_36kr():
+    """获取36氪快讯"""
+    r = run(["curl", "-sL", "--max-time", "8",
+             "https://www.36kr.com/newsflashes",
+             "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"])
+    if not r or r.returncode != 0:
+        return []
+    
+    # 提取JSON数据
+    items = re.findall(r'"newsflashTitle":\{"title":"([^"]+)"', r.stdout)
+    items = [i.encode('utf-8').decode('unicode_escape') for i in items]
+    return items[:6]
+
+def fetch_hn():
+    """Hacker News top stories"""
+    r = run(["curl", "-s", "--max-time", "8",
              "https://hacker-news.firebaseio.com/v0/topstories.json"])
+    if not r:
+        return []
     try:
-        ids = json.loads(r.stdout)[:10]
-        for sid in ids:
-            r2 = run(["curl", "-s", f"https://hacker-news.firebaseio.com/v0/item/{sid}.json"])
+        ids = json.loads(r.stdout)[:8]
+    except:
+        return []
+    
+    result = []
+    for sid in ids:
+        r2 = run(["curl", "-s", "--max-time", "5",
+                  f"https://hacker-news.firebaseio.com/v0/item/{sid}.json"])
+        if not r2:
+            continue
+        try:
             item = json.loads(r2.stdout)
             if item and item.get("title"):
                 url = item.get("url", f"https://news.ycombinator.com/item?id={sid}")
-                ret.append(f"- [{item['title']}]({url})")
-    except:
-        pass
-    return ret
+                result.append(f"- [{item['title']}]({url})")
+        except:
+            pass
+    return result
 
-def search_news(keyword, count=5):
-    """搜索新闻"""
-    results = []
-    # 用 web_search 的工具不可用，这里用 curl 搜 searxng 或直接 API
-    # 改用 web_fetch 采集几个科技新闻站
-    urls = [
-        "https://www.36kr.com/newsflashes",
-        "https://www.jiqizhixin.com/",
-        "https://www.pingwest.com/",
-    ]
-    for url in urls:
-        r = run(["curl", "-sL", url, "-H", "User-Agent: Mozilla/5.0"])
-        if r.returncode == 0:
-            # 提取标题类内容
-            titles = re.findall(r'<h[23][^>]*>(.*?)</h[23]>', r.stdout, re.DOTALL)
-            titles = [re.sub(r'<[^>]+>', '', t).strip() for t in titles]
-            titles = [t for t in titles if len(t) > 5 and len(t) < 200]
-            for t in titles[:3]:
-                results.append(f"- {t}")
-    return results
+def fetch_bili():
+    """B站科技区热门"""
+    r = run(["curl", "-s", "--max-time", "8",
+             "https://api.bilibili.com/x/web-interface/ranking/v2?rid=188&type=all",
+             "-H", "User-Agent: Mozilla/5.0"])
+    if not r:
+        return []
+    try:
+        data = json.loads(r.stdout)
+        items = []
+        for v in data.get("data", {}).get("list", [])[:5]:
+            items.append(f"- [{v['title']}](https://www.bilibili.com/video/{v['bvid']})")
+        return items
+    except:
+        return []
+
+def ai_topic_news():
+    """从36氪快讯中筛选AI相关"""
+    news = fetch_36kr()
+    ai_keywords = ["AI", "人工智能", "大模型", "GPT", "ChatGPT", "OpenAI", "谷歌", "微软",
+                   "Claude", "字节", "百度", "阿里", "腾讯", "华为", "芯片", "算力",
+                   "机器学习", "深度", "机器人", "自动驾驶", "大语言模型", "LLM",
+                   "Midjourney", "Stable Diffusion", "Sora", "Copilot", "Gemini"]
+    
+    ai_news = []
+    other_news = []
+    
+    for n in news:
+        is_ai = any(kw.lower() in n.lower() for kw in ai_keywords)
+        if is_ai:
+            ai_news.append(f"- {n}")
+        else:
+            other_news.append(f"- {n}")
+    
+    return ai_news, other_news
 
 def build_news(today):
     """构建今日新闻"""
@@ -77,55 +102,36 @@ def build_news(today):
 
 > 北京时间 {today.strftime('%H:%M')} 更新 · 过去24小时互联网动态
 """
-
-    # 搜索AI新闻
-    print("正在采集AI新闻...")
-    ai_news = search_news("AI 人工智能")
     
-    content += """
-## 🤖 AI 动态
-"""
+    print("正在采集AI新闻...")
+    ai_news, other_news = ai_topic_news()
+    
+    content += "\n## 🤖 AI 动态\n\n"
     if ai_news:
-        for item in ai_news:
-            content += f"\n{item}"
+        content += "\n".join(ai_news) + "\n"
     else:
-        content += """
-> ⏳ 暂无数据（脚本采集有限，后续优化）
-"""
-
+        content += "> 本次未采集到AI相关新闻\n"
+    
     # Hacker News
     print("正在采集Hacker News...")
-    hn = fetch_hackernews()
+    hn = fetch_hn()
     if hn:
-        content += """
-### 🌐 Hacker News 热门
-"""
-        for item in hn:
-            content += f"\n{item}"
-
-    # B站科技区
+        content += "\n### 🌐 Hacker News 热门\n\n"
+        content += "\n".join(hn) + "\n"
+    
+    # B站
     print("正在采集B站科技热门...")
-    bili = fetch_bilibili_trending()
+    bili = fetch_bili()
     if bili:
-        content += """
-### 📺 B站科技区热门
-"""
-        for item in bili:
-            content += f"\n{item}"
-
-    # 大厂动态
-    content += """
-## 🏢 国内大厂动态
-"""
-    big_tech = search_news("大厂 科技 动态")
-    if big_tech:
-        for item in big_tech:
-            content += f"\n{item}"
+        content += "\n### 📺 B站科技区热门\n\n"
+        content += "\n".join(bili) + "\n"
+    
+    content += "\n## 🏢 国内大厂动态\n\n"
+    if other_news:
+        content += "\n".join(other_news) + "\n"
     else:
-        content += """
-> ⏳ 暂无数据（脚本采集有限，后续优化）
-"""
-
+        content += "> 本次未采集到大厂相关新闻\n"
+    
     content += f"""
 ---
 
@@ -135,12 +141,7 @@ def build_news(today):
 
 def main():
     now = datetime.now(CST)
-    
-    # 如果是凌晨运行，往前一天
-    if now.hour < 6:
-        news_date = now - timedelta(days=1)
-    else:
-        news_date = now
+    news_date = now
     
     content = build_news(news_date)
     
@@ -157,48 +158,58 @@ def main():
     filepath.write_text(content, encoding="utf-8")
     print(f"✅ 已生成: {filepath}")
     
-    # 更新README（添加链接）
+    # 更新README
     readme_path = REPO_DIR / "README.md"
     readme_content = readme_path.read_text(encoding="utf-8")
     
-    # 在README中添加当天链接（如果还没有）
     link_line = f"- [{date_str}]({year}/{month}/{date_str}.md)"
     if link_line not in readme_content:
-        # 在第二行后插入
+        # 找插入位置
         lines = readme_content.split("\n")
-        idx = 2
+        
+        # 找 ## 近期新闻 或文件末尾
+        insert_idx = len(lines)
         for i, line in enumerate(lines):
-            if line.startswith("##"):
-                idx = i
+            if line.startswith("## ") and "近期" in line:
+                insert_idx = i + 1
+                # 跳过空行
+                while insert_idx < len(lines) and lines[insert_idx].strip() == "":
+                    insert_idx += 1
                 break
-        if idx < len(lines):
-            # 看是否已有 ## 近期
-            has_section = any("近期" in l for l in lines)
-            if not has_section:
-                lines.insert(idx, "")
-                lines.insert(idx+1, "## 📅 近期新闻")
-                idx = idx+2
-            
-            # 找到 ## 近期新闻 后面插入
-            for i in range(idx, len(lines)):
-                if lines[i].startswith("##") and "近期" not in lines[i]:
-                    lines.insert(i, link_line)
-                    break
-            else:
-                lines.append(link_line)
+            if line.startswith("## ") and "近期" not in line and "每日" not in line:
+                pass
+        
+        # 如果还没有近期新闻区块
+        has_news_section = any("近期" in l for l in lines)
+        if not has_news_section:
+            # 在第二段后插入
+            lines.append("")
+            lines.append("## 📅 近期新闻")
+            lines.append("")
+            lines.append(link_line)
+        else:
+            lines.insert(insert_idx, link_line)
         
         readme_path.write_text("\n".join(lines), encoding="utf-8")
     
-    # Git提交推送
+    # Git 提交推送
     repo = REPO_DIR
-    run(["git", "-C", str(repo), "add", "."])
-    run(["git", "-C", str(repo), "commit", "-m", f"📰 每日新闻 {date_str}"])
-    result = run(["git", "-C", str(repo), "push", "origin", "main"])
+    token_cmd = f"https://JiangYuxin-Jim:{TOKEN}@github.com/JiangYuxin-Jim/daily-news.git"
     
-    if "nothing to commit" in result.stdout or result.returncode == 0:
-        print(f"✅ 已推送至 GitHub: {date_str}" if result.returncode == 0 else "（没有新内容，跳过）")
+    run(["git", "-C", str(repo), "remote", "set-url", "origin", token_cmd])
+    run(["git", "-C", str(repo), "add", "."])
+    
+    commit = run(["git", "-C", str(repo), "commit", "-m", f"📰 每日新闻 {date_str}"])
+    
+    push = run(["git", "-C", str(repo), "push", "origin", "main"], timeout=30)
+    
+    if push and push.returncode == 0:
+        print(f"✅ 已推送至 GitHub: {date_str}")
+    elif commit and "nothing to commit" in commit.stdout:
+        print("（没有新内容，跳过）")
     else:
-        print(f"❌ 推送失败: {result.stderr}")
+        err = push.stderr if push else "push timeout"
+        print(f"❌ 推送失败: {err[:200]}")
 
 if __name__ == "__main__":
     main()
