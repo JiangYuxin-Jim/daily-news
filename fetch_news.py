@@ -21,16 +21,62 @@ def run(cmd, timeout=15, **kw):
 
 def fetch_36kr():
     """获取36氪快讯"""
-    r = run(["curl", "-sL", "--max-time", "8",
-             "https://www.36kr.com/newsflashes",
-             "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"])
+    # 36氪API接口
+    url = "https://www.36kr.com/newsflashes"
+    r = run(["curl", "-sL", "--max-time", "10",
+             url,
+             "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+             "-H", "Accept: text/html,application/xhtml+xml"])
     if not r or r.returncode != 0:
-        return []
+        return try_alternative_sources()
     
-    # 提取JSON数据
-    items = re.findall(r'"newsflashTitle":\{"title":"([^"]+)"', r.stdout)
-    items = [i.encode('utf-8').decode('unicode_escape') for i in items]
-    return items[:6]
+    items = []
+    # 尝试多种正则匹配36氪标题
+    patterns = [
+        r'"title":"([^"]+?)"',
+        r'<a[^>]*class="title"[^>]*>(.*?)</a>',
+        r'<h2[^>]*>(.*?)</h2>',
+        r'"widgetTitle":"([^"]+)"',
+        r'"itemTitle":"([^"]+)"',
+    ]
+    for pat in patterns:
+        found = re.findall(pat, r.stdout, re.DOTALL)
+        found = [re.sub(r'<[^>]+>', '', f).strip() for f in found]
+        found = [f for f in found if len(f) > 5 and len(f) < 200]
+        items.extend(found)
+    
+    # 去重
+    seen = set()
+    items = [x for x in items if not (x in seen or seen.add(x))]
+    
+    if not items:
+        return try_alternative_sources()
+    return items[:8]
+
+def try_alternative_sources():
+    """备选新闻源"""
+    sources = [
+        "https://www.ithome.com/",
+        "https://www.cnbeta.com/",
+        "https://news.ruanmei.com/",
+        "https://news.mydrivers.com/",
+        "https://www.sohu.com/c/8/1460",
+    ]
+    all_items = []
+    for url in sources:
+        r = run(["curl", "-sL", "--max-time", "6", url,
+                 "-H", "User-Agent: Mozilla/5.0"])
+        if not r or r.returncode != 0:
+            continue
+        # 找h2/h3/strong文本
+        titles = re.findall(r'<(?:h[23]|strong)[^>]*>(.*?)</(?:h[23]|strong)>', r.stdout, re.DOTALL)
+        titles = [re.sub(r'<[^>]+>', '', t).strip() for t in titles]
+        titles = [t for t in titles if 10 < len(t) < 150]
+        titles = titles[:4]
+        all_items.extend(titles)
+        if len(all_items) >= 10:
+            break
+    return all_items[:10]
 
 def fetch_hn():
     """Hacker News top stories"""
