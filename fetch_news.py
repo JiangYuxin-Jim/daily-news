@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_DIR = Path("/home/admin/code/daily-news")
-TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
 CST = timezone(timedelta(hours=8))
 
 def run(cmd, timeout=15, **kw):
@@ -240,14 +240,15 @@ def main():
     
     # Git 提交推送
     repo = REPO_DIR
-    token_cmd = f"https://JiangYuxin-Jim:{TOKEN}@github.com/JiangYuxin-Jim/daily-news.git"
+    # 优先使用 SSH 方式（已配置 SSH key）
+    remote_url = "git@github.com:JiangYuxin-Jim/daily-news.git"
     
-    run(["git", "-C", str(repo), "remote", "set-url", "origin", token_cmd])
+    run(["git", "-C", str(repo), "remote", "set-url", "origin", remote_url])
     run(["git", "-C", str(repo), "add", "."])
     
     commit = run(["git", "-C", str(repo), "commit", "-m", f"📰 每日新闻 {date_str}"])
     
-    push = run(["git", "-C", str(repo), "push", "origin", "main"], timeout=30)
+    push = run(["git", "-C", str(repo), "push", "origin", "main"], timeout=60)
     
     if push and push.returncode == 0:
         print(f"✅ 已推送至 GitHub: {date_str}")
